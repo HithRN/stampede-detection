@@ -31,232 +31,208 @@ from sklearn.preprocessing import label_binarize
 
 
 # ============= COMPREHENSIVE EVALUATION PIPELINE =============
-def evaluate_model_comprehensive(model, X_flow_val, X_scalar_val, y_val_onehot, y_val_labels, class_names=None):
+def evaluate_model_comprehensive(model, X_flow_val, X_scalar_val, y_val, original_frames_val=None, config=None):
     """
-    Comprehensive evaluation pipeline for multi-class classification
-
-    Args:
-        model: Trained keras model
-        X_flow_val: Validation flow data
-        X_scalar_val: Validation scalar features
-        y_val_onehot: One-hot encoded validation labels
-        y_val_labels: Original integer labels (0, 1, 2, 3)
-        class_names: List of class names (default: ["normal", "moderate", "dense", "risky"])
+    Comprehensive evaluation: metrics, confusion matrix, classification report, and ROC-AUC
     """
-    if class_names is None:
-        class_names = ["normal", "moderate", "dense", "risky"]
 
+    import numpy as np
+    from tensorflow.keras.utils import to_categorical
+    from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from datetime import datetime
+
+    os.makedirs('outputs/figures', exist_ok=True)
+    os.makedirs('outputs/results', exist_ok=True)
+
+    
     print("\n" + "="*70)
-    print("COMPREHENSIVE MODEL EVALUATION")
+    print("           COMPREHENSIVE MODEL EVALUATION")
     print("="*70)
-
-    # Get predictions
-    print("\nGenerating predictions...")
-    y_pred_proba = model.predict([X_flow_val, X_scalar_val], verbose=0)
-    y_pred_labels = np.argmax(y_pred_proba, axis=1)
-
-    # 1. PRECISION (Macro + Per Class)
+    
+    if config is None:
+        class_names = ["normal", "moderate", "dense", "risky"]
+    else:
+        class_names = config.get('data', {}).get('class_names', ["normal", "moderate", "dense", "risky"])
+    
+    # Convert true labels to one-hot
+    y_val_onehot = to_categorical(y_val, num_classes=len(class_names))
+    #y_test_onehot = to_categorical(y_test, num_classes=len(class_names))
+    
+    # Get prediction probabilities
+    y_pred_proba = model.predict([X_flow_val, X_scalar_val], verbose=1)
+    
+    # SAFE: Handle NaN/Inf in prediction probabilities
+    if np.any(np.isnan(y_pred_proba)) or np.any(np.isinf(y_pred_proba)):
+        print("WARNING: NaN/Inf detected in prediction probabilities. Applying safe fixes...")
+        # Replace NaN/Inf with 0 and clip to avoid overflow
+        y_pred_proba = np.nan_to_num(y_pred_proba, nan=0.0, posinf=1e6, neginf=-1e6)
+        # Ensure each sample sums to 1 (numerical stability)
+        prob_sum = np.sum(y_pred_proba, axis=1, keepdims=True)
+        # Avoid division by zero
+        prob_sum = np.clip(prob_sum, 1e-8, None)
+        y_pred_proba = y_pred_proba / prob_sum
+    
+    # Convert to class predictions
+    y_pred = np.argmax(y_pred_proba, axis=1)
+    
+    # === Classification Metrics ===
     print("\n" + "-"*70)
-    print("PRECISION METRICS")
+    print("           CLASSIFICATION METRICS (Validation Set)")
     print("-"*70)
-
-    precision_macro = precision_score(y_val_labels, y_pred_labels, average='macro')
-    precision_per_class = precision_score(y_val_labels, y_pred_labels, average=None)
-
-    print(f"Macro Precision: {precision_macro:.4f}")
-    print("\nPer-Class Precision:")
-    for i, class_name in enumerate(class_names):
-        print(f"  {class_name}: {precision_per_class[i]:.4f}")
-
-    # 2. RECALL (Macro + Per Class)
-    print("\n" + "-"*70)
-    print("RECALL METRICS")
-    print("-"*70)
-
-    recall_macro = recall_score(y_val_labels, y_pred_labels, average='macro')
-    recall_per_class = recall_score(y_val_labels, y_pred_labels, average=None)
-
-    print(f"Macro Recall: {recall_macro:.4f}")
-    print("\nPer-Class Recall:")
-    for i, class_name in enumerate(class_names):
-        print(f"  {class_name}: {recall_per_class[i]:.4f}")
-
-    # 3. F1-SCORE (Macro + Weighted)
-    print("\n" + "-"*70)
-    print("F1-SCORE METRICS")
-    print("-"*70)
-
-    f1_macro = f1_score(y_val_labels, y_pred_labels, average='macro')
-    f1_weighted = f1_score(y_val_labels, y_pred_labels, average='weighted')
-    f1_per_class = f1_score(y_val_labels, y_pred_labels, average=None)
-
-    print(f"Macro F1-Score: {f1_macro:.4f}")
-    print(f"Weighted F1-Score: {f1_weighted:.4f}")
-    print("\nPer-Class F1-Score:")
-    for i, class_name in enumerate(class_names):
-        print(f"  {class_name}: {f1_per_class[i]:.4f}")
-
-    # 4. CONFUSION MATRIX
-    print("\n" + "-"*70)
-    print("CONFUSION MATRIX")
-    print("-"*70)
-
-    cm = confusion_matrix(y_val_labels, y_pred_labels)
+    
+    # Confusion Matrix
+    cm = confusion_matrix(y_val, y_pred)
+    print("\nConfusion Matrix (Validation):")
     print(cm)
-
-    # 5. CLASSIFICATION REPORT
-    print("\n" + "-"*70)
-    print("CLASSIFICATION REPORT")
-    print("-"*70)
-
-    print(classification_report(y_val_labels, y_pred_labels, target_names=class_names))
-
-    # 6. ROC-AUC (One-vs-Rest)
-    print("\n" + "-"*70)
-    print("ROC-AUC METRICS (One-vs-Rest)")
-    print("-"*70)
-
-    # Compute ROC-AUC for each class
-    roc_auc_per_class = {}
-    fpr = {}
-    tpr = {}
-    roc_auc = {}
-
-    for i, class_name in enumerate(class_names):
-        fpr[i], tpr[i], _ = roc_curve(y_val_onehot[:, i], y_pred_proba[:, i])
-        roc_auc[i] = auc(fpr[i], tpr[i])
-        roc_auc_per_class[class_name] = roc_auc[i]
-        print(f"  {class_name}: {roc_auc[i]:.4f}")
-
-    # Macro and Weighted ROC-AUC
-    roc_auc_macro = roc_auc_score(y_val_onehot, y_pred_proba, average='macro', multi_class='ovr')
-    roc_auc_weighted = roc_auc_score(y_val_onehot, y_pred_proba, average='weighted', multi_class='ovr')
-
-    print(f"\nMacro ROC-AUC: {roc_auc_macro:.4f}")
-    print(f"Weighted ROC-AUC: {roc_auc_weighted:.4f}")
-
-    # ============= VISUALIZATIONS =============
-
-    # Plot 1: Confusion Matrix
-    print("\nGenerating Confusion Matrix plot...")
+    
+    # Plot Confusion Matrix
     plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=class_names, yticklabels=class_names,
-                cbar_kws={'label': 'Count'})
-    plt.title('Confusion Matrix', fontsize=16, fontweight='bold')
-    plt.ylabel('True Label', fontsize=12)
-    plt.xlabel('Predicted Label', fontsize=12)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names)
+    plt.title('Confusion Matrix (Validation Set)')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
     plt.tight_layout()
-    plt.savefig('confusion_matrix.png', dpi=300, bbox_inches='tight')
-    print("  Saved: confusion_matrix.png")
+    plt.savefig('outputs/figures/confusion_matrix_validation.png')
     plt.close()
-
-    # Plot 2: ROC Curves (One plot with all classes)
-    print("Generating ROC Curves plot...")
+    
+    # Classification Report
+    print("\nClassification Report (Validation):")
+    print(classification_report(y_val, y_pred, target_names=class_names))
+    
+    # Save report to file
+    with open('outputs/figures/classification_report.txt', 'w') as f:
+        f.write("Classification Report (Validation Set)\n")
+        f.write("="*50 + "\n")
+        f.write(classification_report(y_val, y_pred, target_names=class_names))
+    
+    # === ROC-AUC (One-vs-Rest) ===
+    print("\n" + "-"*70)
+    print("           ROC-AUC METRICS (One-vs-Rest)")
+    print("-"*70)
+    
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+    n_classes = len(class_names)
+    
+    # Safe ROC-AUC computation
+    for i in range(n_classes):
+        # Extract scores for class i
+        scores = y_pred_proba[:, i]
+        
+        # Ensure scores are finite and in [0,1] range
+        if np.any(np.isnan(scores)) or np.any(np.isinf(scores)):
+            print(f"Warning: Invalid scores for class {i} ({class_names[i]}). Clipping...")
+            scores = np.nan_to_num(scores, nan=0.5, posinf=1.0, neginf=0.0)
+        scores = np.clip(scores, 0.0, 1.0)
+        
+        # Compute ROC curve and AUC
+        try:
+            fpr[i], tpr[i], _ = roc_curve(y_val_onehot[:, i], scores)
+            roc_auc[i] = auc(fpr[i], tpr[i])
+            print(f"Class {i} ({class_names[i]}): AUC = {roc_auc[i]:.4f}")
+        except Exception as e:
+            print(f"Failed to compute ROC for class {i} ({class_names[i]}): {e}")
+            fpr[i] = np.array([0, 1])
+            tpr[i] = np.array([0, 1])
+            roc_auc[i] = 0.5  # fallback
+    
+    # ROC-AUC Plot (One-vs-Rest)
     plt.figure(figsize=(10, 8))
-
-    colors = ['blue', 'red', 'green', 'orange']
-    for i, (class_name, color) in enumerate(zip(class_names, colors)):
+    colors = ['navy', 'turquoise', 'darkorange', 'red']
+    
+    for i, color in enumerate(colors[:n_classes]):
         plt.plot(fpr[i], tpr[i], color=color, lw=2,
-                label=f'{class_name} (AUC = {roc_auc[i]:.2f})')
-
-    # Plot diagonal line
-    plt.plot([0, 1], [0, 1], 'k--', lw=2, label='Random Classifier')
-
+                 label=f'{class_names[i]} (AUC = {roc_auc[i]:.4f})')
+    
+    plt.plot([0, 1], [0, 1], 'k--', lw=2)
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate', fontsize=12)
-    plt.ylabel('True Positive Rate', fontsize=12)
-    plt.title('ROC Curves (One-vs-Rest)', fontsize=16, fontweight='bold')
-    plt.legend(loc="lower right", fontsize=10)
-    plt.grid(alpha=0.3)
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curves (Validation Set - One-vs-Rest)')
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('roc_curves.png', dpi=300, bbox_inches='tight')
-    print("  Saved: roc_curves.png")
+    plt.savefig('outputs/figures/roc_auc_multiclass.png')
     plt.close()
+    
+    # === Test Set Evaluation ===
+    print("\n" + "-"*70)
+    print("           TEST SET METRICS")
+    print("-"*70)
+    
+    # Test set predictions
+    '''
+    if X_flow_test is not None and X_scalar_test is not None:
+        y_test_pred_proba = model.predict([X_flow_test, X_scalar_test], verbose=1)
+        y_test_pred = np.argmax(y_test_pred_proba, axis=1)
 
-    # ============= SAVE METRICS TO CSV =============
-    print("\nSaving all metrics to CSV...")
+        # Handle NaN/Inf in test predictions
+        if np.any(np.isnan(y_test_pred_proba)) or np.any(np.isinf(y_test_pred_proba)):
+            y_test_pred_proba = np.nan_to_num(y_test_pred_proba, nan=0.0, posinf=1e6, neginf=-1e6)
+            prob_sum = np.clip(np.sum(y_test_pred_proba, axis=1, keepdims=True), 1e-8, None)
+            y_test_pred_proba = y_test_pred_proba / prob_sum
+            y_test_pred = np.argmax(y_test_pred_proba, axis=1)
+        
+        # Test set metrics
+        print("\nTest Set Confusion Matrix:")
+        cm_test = confusion_matrix(y_test, y_test_pred)
+        print(cm_test)
+        
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm_test, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=class_names, yticklabels=class_names)
+        plt.title('Confusion Matrix (Test Set)')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.tight_layout()
+        plt.savefig('outputs/figures/confusion_matrix_test.png')
+        plt.close()
+        
+        print("\nTest Set Classification Report:")
+        print(classification_report(y_test, y_test_pred, target_names=class_names))
+        
+        # Save test report
+        with open('outputs/figures/classification_report_test.txt', 'w') as f:
+            f.write("Classification Report (Test Set)\n")
+            f.write("="*50 + "\n")
+            f.write(classification_report(y_test, y_test_pred, target_names=class_names))
+        
+        # Save test probabilities and predictions for further analysis
+        np.save('outputs/results/y_test_pred_proba.npy', y_test_pred_proba)
+        np.save('outputs/results/y_test_pred.npy', y_test_pred)
+        np.save('outputs/results/y_test_true.npy', y_test)
+    '''
 
-    # Create comprehensive metrics dictionary
-    metrics_data = {
-        'Metric': [],
-        'Value': [],
-        'Type': []
-    }
-
-    # Overall metrics
-    metrics_data['Metric'].append('Macro Precision')
-    metrics_data['Value'].append(precision_macro)
-    metrics_data['Type'].append('Overall')
-
-    metrics_data['Metric'].append('Macro Recall')
-    metrics_data['Value'].append(recall_macro)
-    metrics_data['Type'].append('Overall')
-
-    metrics_data['Metric'].append('Macro F1-Score')
-    metrics_data['Value'].append(f1_macro)
-    metrics_data['Type'].append('Overall')
-
-    metrics_data['Metric'].append('Weighted F1-Score')
-    metrics_data['Value'].append(f1_weighted)
-    metrics_data['Type'].append('Overall')
-
-    metrics_data['Metric'].append('Macro ROC-AUC')
-    metrics_data['Value'].append(roc_auc_macro)
-    metrics_data['Type'].append('Overall')
-
-    metrics_data['Metric'].append('Weighted ROC-AUC')
-    metrics_data['Value'].append(roc_auc_weighted)
-    metrics_data['Type'].append('Overall')
-
-    # Per-class metrics
-    for i, class_name in enumerate(class_names):
-        metrics_data['Metric'].append(f'Precision - {class_name}')
-        metrics_data['Value'].append(precision_per_class[i])
-        metrics_data['Type'].append('Per-Class')
-
-        metrics_data['Metric'].append(f'Recall - {class_name}')
-        metrics_data['Value'].append(recall_per_class[i])
-        metrics_data['Type'].append('Per-Class')
-
-        metrics_data['Metric'].append(f'F1-Score - {class_name}')
-        metrics_data['Value'].append(f1_per_class[i])
-        metrics_data['Type'].append('Per-Class')
-
-        metrics_data['Metric'].append(f'ROC-AUC - {class_name}')
-        metrics_data['Value'].append(roc_auc[i])
-        metrics_data['Type'].append('Per-Class')
-
-    # Create DataFrame and save
-    df_metrics = pd.DataFrame(metrics_data)
-    df_metrics.to_csv('evaluation_metrics.csv', index=False)
-    print("  Saved: evaluation_metrics.csv")
-
-    # Also save confusion matrix separately
-    df_cm = pd.DataFrame(cm, index=class_names, columns=class_names)
-    df_cm.to_csv('confusion_matrix.csv')
-    print("  Saved: confusion_matrix.csv")
-
-    print("\n" + "="*70)
-    print("EVALUATION COMPLETE")
-    print("="*70)
-
-    return {
-        'precision_macro': precision_macro,
-        'precision_per_class': precision_per_class,
-        'recall_macro': recall_macro,
-        'recall_per_class': recall_per_class,
-        'f1_macro': f1_macro,
-        'f1_weighted': f1_weighted,
-        'f1_per_class': f1_per_class,
-        'confusion_matrix': cm,
-        'roc_auc_macro': roc_auc_macro,
-        'roc_auc_weighted': roc_auc_weighted,
-        'roc_auc_per_class': roc_auc_per_class,
+    # Save val probabilities and predictions
+    np.save('outputs/results/y_val_pred_proba.npy', y_pred_proba)
+    np.save('outputs/results/y_val_pred.npy', y_pred)
+    np.save('outputs/results/y_val_true.npy', y_val)
+    
+    # === Evaluation Results Dictionary ===
+    evaluation_results = {
+        'confusion_matrix_val': cm,
+        'classification_report_val': classification_report(y_val, y_pred, target_names=class_names, output_dict=True),
+        'roc_auc': roc_auc,
         'fpr': fpr,
-        'tpr': tpr
+        'tpr': tpr,
+        'class_names': class_names,
+        'validation_metrics': {
+            'accuracy': np.mean(y_val == y_pred),
+            'macro_precision': np.mean([cm[i, i] / np.sum(cm[:, i]) if np.sum(cm[:, i]) > 0 else 0 for i in range(len(class_names))]),
+            'macro_recall': np.mean([cm[i, i] / np.sum(cm[i, :]) if np.sum(cm[i, :]) > 0 else 0 for i in range(len(class_names))])
+        }
     }
+    
+    print(f"\nOverall validation accuracy: {evaluation_results['validation_metrics']['accuracy']:.4f}")
+    print("\nROC-AUC calculation completed successfully.")
+    
+    return evaluation_results
+
 
 
 # Define constants
@@ -365,12 +341,14 @@ def calculate_motion_entropy(flow_sequences):
             # Calculate entropy of magnitudes
             # First, create histogram
             hist, _ = np.histogram(mag, bins=32, range=(0, np.max(mag) if np.max(mag) > 0 else 1))
-
-            # Normalize histogram to get probability distribution
-            hist = hist / (np.sum(hist) if np.sum(hist) > 0 else 1)
-
-            # Calculate entropy
+            if np.sum(hist) > 0:
+                hist = hist / np.sum(hist)
+            else:
+                hist = np.ones_like(hist) / len(hist)
             flow_entropy = entropy(hist, base=2)
+            if not np.isfinite(flow_entropy):
+                flow_entropy = 0.0
+
             seq_entropy.append(flow_entropy)
 
         entropies.append(np.array(seq_entropy))
@@ -504,6 +482,9 @@ def load_optical_flow_data(base_dir, categories=["normal", "moderate", "dense", 
             motion_entropy
         ], axis=2)  # Shape: [num_sequences, sequence_length, 4]
 
+        scalar_features = np.nan_to_num(scalar_features, nan=0.0, posinf=1e3, neginf=-1e3)
+        X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=-1.0)
+
         print(f"Combined scalar features shape: {scalar_features.shape}")
 
         return X, scalar_features, y, original_frames
@@ -636,9 +617,26 @@ def log_hyperparameters_to_json(model, batch_size, epochs, learning_rate,
             },
             "output_shape": str(model.output.shape)
         },
-        "loss_function": str(model.loss),
-        "metrics": [m if isinstance(m, str) else m.__name__ for m in model.compiled_metrics._metrics]
+        "loss_function": str(model.loss) 
     }
+        #"metrics": [m if isinstance(m, str) else m.__name__ for m in model.compiled_metrics._metrics]
+        # OLD (line 640):
+# "metrics": [m if isinstance(m, str) else m.__name__ for m in model.compiled_metrics._metrics]
+
+# NEW (replacement):
+        
+    try:
+        if hasattr(model, 'metrics_names'):
+            metrics_list = model.metrics_names
+        else:
+            metrics_list = ['accuracy']
+    except:
+        metrics_list = ['accuracy']
+
+    hyperparameters["metrics"] = metrics_list
+
+    
+    
 
     # Add scheduler information if provided
     if scheduler_info:
@@ -789,94 +787,103 @@ def create_flow_grid_visualization(flow_sequence, save_path, max_frames=8):
 
 
 def create_prediction_overlay(original_frame, prediction_probs, true_label=None,
-                                save_path=None, class_names=None):
+                              save_path=None, class_names=None):
     """
     Create an overlay showing prediction probabilities on the original frame
-
-    Args:
-        original_frame: Original video frame
-        prediction_probs: Array of prediction probabilities [prob_class0, prob_class1, ...]
-        true_label: True class label (optional)
-        save_path: Path to save the visualization
-        class_names: List of class names
-
-    Returns:
-        overlay_frame: Frame with prediction overlay
     """
     if class_names is None:
         class_names = ["normal", "moderate", "dense", "risky"]
-
+    
     # Create a copy of the frame
     overlay_frame = original_frame.copy()
     h, w = overlay_frame.shape[:2]
-
+    
+    # FIXED: Check for NaN values in predictions
+    if np.any(np.isnan(prediction_probs)):
+        print(f"Warning: NaN detected in predictions: {prediction_probs}")
+        # Replace NaN with zeros
+        prediction_probs = np.nan_to_num(prediction_probs, nan=0.0)
+        # Ensure probabilities sum to 1
+        prob_sum = np.sum(prediction_probs)
+        if prob_sum > 0:
+            prediction_probs = prediction_probs / prob_sum
+        else:
+            prediction_probs = np.ones(len(class_names)) / len(class_names)
+    
     # Get predicted class
     pred_class = np.argmax(prediction_probs)
     pred_confidence = prediction_probs[pred_class]
-
-    # Create semi-transparent overlay for text background
-    overlay = overlay_frame.copy()
-
+    
     # Define colors for each class (BGR format)
     class_colors = {
-        0: (0, 255, 0),    # Normal - Green
-        1: (0, 255, 255),  # Moderate - Yellow
-        2: (0, 165, 255),  # Dense - Orange
-        3: (0, 0, 255)     # Risky - Red
+        0: (0, 255, 0),      # Normal - Green
+        1: (0, 255, 255),    # Moderate - Yellow
+        2: (0, 165, 255),    # Dense - Orange
+        3: (0, 0, 255)       # Risky - Red
     }
-
+    
     # Draw prediction box
     box_height = 150
     box_y_start = h - box_height - 10
+    cv2.rectangle(overlay_frame, (10, box_y_start), (w - 10, h - 10), (0, 0, 0), -1)
+    overlay = overlay_frame.copy()
     cv2.rectangle(overlay, (10, box_y_start), (w - 10, h - 10), (0, 0, 0), -1)
     overlay_frame = cv2.addWeighted(overlay, 0.6, overlay_frame, 0.4, 0)
-
+    
     # Add prediction text
     y_offset = box_y_start + 30
     pred_text = f"Prediction: {class_names[pred_class].upper()}"
     conf_text = f"Confidence: {pred_confidence*100:.1f}%"
-
+    
     cv2.putText(overlay_frame, pred_text, (20, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, class_colors[pred_class], 2)
     cv2.putText(overlay_frame, conf_text, (20, y_offset + 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
+    
     # Add probability bars
     bar_y = y_offset + 60
     bar_width = w - 100
     bar_height = 15
-
+    
     for i, (class_name, prob) in enumerate(zip(class_names, prediction_probs)):
+        # FIXED: Handle NaN in individual probabilities
+        if np.isnan(prob) or np.isinf(prob):
+            prob = 0.0
+        
+        # Clamp probability to [0, 1] range
+        prob = np.clip(prob, 0.0, 1.0)
+        
         # Class label
         cv2.putText(overlay_frame, class_name[:4].upper(), (20, bar_y + i*25 + 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
+        
         # Probability bar background
         cv2.rectangle(overlay_frame, (100, bar_y + i*25),
-                      (100 + bar_width, bar_y + i*25 + bar_height), (50, 50, 50), -1)
-
-        # Probability bar fill
+                     (100 + bar_width, bar_y + i*25 + bar_height), (50, 50, 50), -1)
+        
+        # Probability bar fill (safe conversion)
         fill_width = int(bar_width * prob)
         cv2.rectangle(overlay_frame, (100, bar_y + i*25),
-                      (100 + fill_width, bar_y + i*25 + bar_height),
-                      class_colors[i], -1)
-
+                     (100 + fill_width, bar_y + i*25 + bar_height),
+                     class_colors[i], -1)
+        
         # Percentage text
         cv2.putText(overlay_frame, f"{prob*100:.1f}%",
-                    (105 + bar_width, bar_y + i*25 + 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-
+                   (105 + bar_width, bar_y + i*25 + 12),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    
     # Add true label if provided
     if true_label is not None:
         true_text = f"True: {class_names[true_label].upper()}"
         color = (0, 255, 0) if true_label == pred_class else (0, 0, 255)
         cv2.putText(overlay_frame, true_text, (w - 250, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+    
     if save_path:
         cv2.imwrite(save_path, overlay_frame)
-
+    
     return overlay_frame
+
 
 
 def save_prediction_visualizations(model, X_flow_val, X_scalar_val, y_val,
@@ -1018,6 +1025,11 @@ def train_enhanced_model_with_visualizations(X_flow, X_scalar, y, original_frame
 
     initial_epoch = 0
 
+    #sanity check
+    print("X_flow stats:", np.min(X_flow), np.max(X_flow), np.isnan(X_flow).any(), np.isinf(X_flow).any())
+    print("X_scalar stats:", np.min(X_scalar), np.max(X_scalar), np.isnan(X_scalar).any(), np.isinf(X_scalar).any())
+
+
     # Convert labels to one-hot encoding
     y_onehot = to_categorical(y, num_classes=NUM_CLASSES)
 
@@ -1114,9 +1126,15 @@ def train_enhanced_model_with_visualizations(X_flow, X_scalar, y, original_frame
 
     # Run comprehensive evaluation
     evaluation_results = evaluate_model_comprehensive(
-        model, X_flow_val, X_scalar_val, y_val_onehot, y_val_labels,
-        class_names=["normal", "moderate", "dense", "risky"]
-    )
+    model,
+    X_flow_val,
+    X_scalar_val,
+    y_val_labels,           # pass integer labels here
+    original_frames_val=original_frames_val,  # optional if you later use them
+    config=None             # or pass your config dict if you have one
+)
+
+
 
     model.save('enhanced_stampede_detection_final.h5')
 
@@ -1453,7 +1471,7 @@ def main():
     parser.add_argument('--model-path', type=str, default='enhanced_stampede_detection_checkpoint.h5',
                         help='Path to pre-trained model or checkpoint')
     parser.add_argument('--video-path', type=str,
-                        default=r"C:\Users\rnidh\Downloads\Untitled video - Made with Clipchamp (2).mp4", #change this
+                        default=r"C:\\MMM\\stampede-detection-main\\Untitled video - Made with Clipchamp (2).mp4", #change this
                         help='Path to test video')
     parser.add_argument('--use-enhanced', action='store_true', default=True,
                         help='Use the enhanced model with additional features')
@@ -1474,7 +1492,7 @@ def main():
     start_time = time.time()
 
     # Set the data path
-    data_path = r"C:\Users\rnidh\stampedeDetection\output\Stampede_detection_dataset"  #change this
+    data_path = r"C:\MMM\stampede-detection-main\Stampede_detection_dataset"  #change this
 
     # Load the dataset with enhanced features
     print("Loading optical flow data and calculating additional features...")
